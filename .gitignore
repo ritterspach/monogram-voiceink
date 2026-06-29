@@ -10,5 +10,10 @@ reference/
 # Wegwerf-/Experiment-Dateien & Mitschnitte
 scratch/
 
+# Swift / SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
 # macOS
 .DS_Store

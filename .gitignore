@@ -1,0 +1,14 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Reverse-Engineering-Referenz: proprietäre Monogram-Binärdateien/-Installer
+# (zu groß für GitHub + urheberrechtlich geschützt) -> nur lokal
+reference/
+
+# Wegwerf-/Experiment-Dateien & Mitschnitte
+scratch/
+
+# macOS
+.DS_Store

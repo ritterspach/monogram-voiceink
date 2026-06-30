@@ -45,7 +45,8 @@ spätere Rebuilds erhalten.
 
 | Aufgabe | Befehl |
 |---|---|
-| Live-Logs | `log stream --predicate 'subsystem == "com.monogram.voiceink"'` |
+| Live-Logs | `/usr/bin/log stream --predicate 'subsystem == "com.monogram.voiceink"'` |
+| Verlauf | `/usr/bin/log show --last 15m --predicate 'subsystem == "com.monogram.voiceink"'` |
 | Datei-Logs | `~/Library/Logs/MonogramVoiceInk.{out,err}.log` |
 | Neu bauen + übernehmen | `MONOGRAM_SIGN_ID="Monogram Self-Signed" ./scripts/build-app.sh && ./scripts/install-agent.sh` |
 | Agent entfernen | `./scripts/install-agent.sh stop` |

@@ -23,6 +23,7 @@ final class Controller {
     private var lastSec = -1
     private var overlayUntil = 0.0
     private var didStartup = false
+    private var lastKeepAlive = 0.0
 
     private let tapMax = 0.35
     private var timer: DispatchSourceTimer?
@@ -174,6 +175,14 @@ final class Controller {
 
     private func tick() {
         let now = CACurrentMediaTime()
+        // Keep-Alive: Das Gerät schaltet die Beleuchtung nach einer Weile ohne
+        // Befehle ab (Inaktivitäts-Timeout). Im Leerlauf daher alle 2 s die
+        // Helligkeit neu setzen – flimmerfrei, hält die Beleuchtung an. Während der
+        // Aufnahme unnötig (Display/LED-Updates halten das Gerät ohnehin wach).
+        if !recording && now - lastKeepAlive >= 2.0 {
+            lastKeepAlive = now
+            dev.setBrightness()
+        }
         if now < overlayUntil { return }
         if overlayUntil != 0 {                 // Modusname-Overlay gerade abgelaufen
             overlayUntil = 0; lastSec = -1

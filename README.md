@@ -1,81 +1,98 @@
 # monogram-voiceink
 
-Direkte Ansteuerung von **Monogram**-Hardware (ehemals Palette Gear) — Tasten, LEDs
-und das 240×240-Display — **direkt über USB-Seriell, komplett ohne die (eingestellte)
-Monogram-Software**. Inklusive eines freihändigen **VoiceInk-Sprachcontrollers**.
+Native **Swift-App für macOS**, die **Monogram**-Hardware (ehemals Palette Gear) —
+Tasten, LEDs und das 240×240-Display — **direkt über USB-Seriell** ansteuert,
+komplett ohne die (eingestellte) Monogram-Software. Sie läuft als unsichtbarer
+**Hintergrund-Agent** und macht aus dem Gerät einen freihändigen **VoiceInk-
+Sprachcontroller**.
 
-Das Protokoll wurde selbst reverse-engineered. Das Gerät spricht **MessagePack** in
-**HDLC-Frames (0x7e)** über eine USB-CDC-Serielle Verbindung.
+Das Wire-Protokoll wurde selbst reverse-engineered: das Gerät spricht **MessagePack**
+in **HDLC-Frames (0x7e)** über eine USB-CDC-Serielle Verbindung.
 
-## Stand
+## Funktion
 
-| Funktion | Status |
+- **Taste 1 – Aufnahme:** kurz tippen = an/aus (Toggle), halten = Push-to-Talk.
+  Nimmt im aktuell gewählten Modus auf (sendet dessen VoiceInk-Tastenkürzel).
+- **Taste 2 – Modus wählen:** zykelt durch VoiceInks Modi (dynamisch aus dessen
+  Einstellungen gelesen) und zeigt den Modus auf dem Display. Der Modus wird beim
+  Aufnehmen über das Kürzel wirksam.
+- **Display:** Bereitschaft (Mikrofon + Modus), Aufnahme (Timer + Modus), Modus-Overlay.
+- **LED:** ruhiges Teal im Leerlauf, pulsierendes Rot während der Aufnahme.
+- **Dauerbetrieb:** verbindet automatisch, übersteht Ab-/Anstecken (Hotplug) und
+  Schlaf/Aufwachen, startet bei der Anmeldung.
+
+## Aufbau (Swift-Package)
+
+| Datei | Zweck |
 |---|---|
-| Tasten lesen (Eingabe) | ✅ |
-| LED-Farben setzen | ✅ |
-| 240×240-Display bespielen (RGB565) | ✅ |
-| VoiceInk-Controller (Push-to-Talk/Toggle + Display-Status) | ✅ |
+| `main.swift` | Einstiegspunkt, Diagnose-Flags, Single-Instance-Sperre, Start des Supervisors |
+| `Supervisor.swift` | Geräte-Lebenszyklus: Auto-Connect/Reconnect (Hotplug), nie `exit()` bei fehlendem Gerät |
+| `MonogramDevice.swift` | USB-Seriell (ORSSerialPort), Frame-Parsing, Tasten-Events, Display/LED senden |
+| `HDLC.swift` | HDLC-Framing (0x7e/0x7d) |
+| `Controller.swift` | Tastenlogik (Aufnahme/Modus), Display-Zustände, LED-Feedback |
+| `VoiceInk.swift` | VoiceInks Modi/Shortcuts aus den UserDefaults lesen, Tastenkürzel via CGEvent |
+| `Screens.swift` / `DisplayRenderer.swift` | Fertige Display-Bilder (READY/REC/MODE) + 240×240-RGB565-Renderer |
+| `MenuControl.swift` | (nur Diagnose) Modus über VoiceInks Statusmenü via Accessibility umschalten |
+| `Log.swift` | Logging via `os_log` (Subsystem `com.monogram.voiceink`) |
 
-## Protokoll (selbst ermittelt)
+## Schnellstart (Entwicklung)
 
-```
-Wire:   0x7e <payload> 0x7e        HDLC-Framing, Escape 0x7d (Byte XOR 0x20)
-Payload: MessagePack, jede Nachricht ein eigener Frame
-
-Eingang:  {"in": [ {"i": <slot>, "v": [v0..v7]}, ... ]}
-          2-Tasten-Modul: v[0] = Bitmaske (1=Taste1, 2=Taste2, 3=beide)
-LED:      {"set_module": [id, 0x02, r|g<<8|b<<16]}  + Commit {"set_module":[id,0x05,0x7f<<24]}
-Helligkeit: {"set_brightness": [moduleLed, displayBacklight]}
-Display:  {"invoke_display":0x03}  (aus)
-          je 4 Zeilen: {"write_display_slow":[true,0,y0,240,y1,chunk]}   (240×240 RGB565, 1920 B/Paket)
-          {"invoke_display":0x04}  (an)
+```sh
+swift build
+swift run MonogramVoiceInk            # im Vordergrund (Strg+C beendet)
 ```
 
-Gerät: „Monogram Core Module", USB-CDC (`/dev/cu.usbmodem*`), VID `0x0483` (STM32).
+Diagnose ohne Gerät:
+
+```sh
+swift run MonogramVoiceInk --modes                 # VoiceInk-Modi/Shortcuts prüfen
+swift run MonogramVoiceInk --switch-menu "<Name>"  # Modus über Statusmenü (AX) testen
+```
+
+## Produktiv (Hintergrund-Agent)
+
+Komplette Einrichtung — selbstsigniertes Zertifikat, Bundle bauen, Bedienungshilfen-
+Recht, launchd-Agent — in **[`packaging/SETUP.md`](packaging/SETUP.md)**. Kurz:
+
+```sh
+MONOGRAM_SIGN_ID="Monogram Self-Signed" ./scripts/build-app.sh   # → ~/Applications/MonogramVoiceInk.app
+./scripts/install-agent.sh                                       # Start bei Anmeldung
+/usr/bin/log stream --predicate 'subsystem == "com.monogram.voiceink"'   # Live-Logs
+```
+
+Die App braucht nur das **Bedienungshilfen-Recht** (für die simulierten Tastenkürzel).
 
 ## Voraussetzungen
 
-- macOS, Python 3
-- Der Monogram-Hintergrunddienst darf **nicht** laufen (er belegt den seriellen Port):
+- macOS 14+, Swift-Toolchain (Xcode).
+- Der Monogram-Hintergrunddienst darf **nicht** laufen (belegt sonst den seriellen Port):
   ```sh
   killall "Monogram Creator Internal" "Monogram Service Helper" "Monogram Workspace Helper"
   ```
 
-## Einrichtung
+## Protokoll (selbst ermittelt)
 
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install pyserial msgpack websocket-client
+```
+Wire:    0x7e <payload> 0x7e        HDLC-Framing, Escape 0x7d (Byte XOR 0x20)
+Payload: MessagePack, jede Nachricht ein eigener Frame
+
+Eingang:    {"in": [ {"i": <slot>, "v": [v0..v7]}, ... ]}
+            2-Tasten-Modul: v[0] = Bitmaske (1=Taste1, 2=Taste2, 3=beide)
+LED:        {"set_module": [id, 0x02, r|g<<8|b<<16]}  + Commit {"set_module":[id,0x05,0x7f<<24]}
+Helligkeit: {"set_brightness": [moduleLed, displayBacklight]}
+Display:    {"invoke_display":0x03}  (Frame beginnen)
+            je 4 Zeilen: {"write_display_slow":[true,0,y0,240,y1,chunk]}   (240×240 RGB565)
+            {"invoke_display":0x04}  (anzeigen)
 ```
 
-## Werkzeuge
+Gerät: „Monogram Core Module", USB-CDC (`/dev/cu.usbmodem*`), VID `0x0483` (STM32).
 
-| Datei | Zweck |
-|---|---|
-| `monogram_core.py` | Protokoll-Bibliothek (Framing, MessagePack, `MonogramDevice`: `button_events`, `set_led`, `write_display`) |
-| `display.py` | Reiner-Python RGB565-Framebuffer + 7-Segment-Renderer + Formen |
-| `monitor.py` | Live-Tasten-Übersicht |
-| `monogram.py` | Tastendruck → frei definierbare Aktionen |
-| `clock.py` | Live-Uhr auf dem Display |
-| `voiceink_ctl.py` | VoiceInk-Controller (Taste 1 = Push-to-Talk/Toggle, Taste 2 = Modus, Display = REC/READY + Timer, LED-Feedback) |
-| `vimodes.py` | Liest VoiceInks konfigurierte Modi + Shortcuts dynamisch aus den UserDefaults |
-| `led_colors.py`, `led_test.py`, `display_test.py` | Hardware-Tests |
-| `listen.py`, `send.py`, `experiment.py` | Debugging/Erkundung |
+## Herkunft
 
-## Schnellstart
+Das Protokoll wurde mit einem Python-Prototyp erkundet (`monogram_core.py`,
+`monogram.py`, `listen.py`, `experiment.py` …), der zur Referenz im Repo bleibt.
+Die produktive Steuerung ist die obige Swift-App.
 
-```sh
-.venv/bin/python clock.py          # Live-Uhr aufs Display
-.venv/bin/python voiceink_ctl.py   # Sprach-Controller
-```
-
-## Hinweis
-
-Der Ordner `reference/` (Monograms proprietärer Installer/Binärdateien, die beim
-Reverse-Engineering genutzt wurden) ist **bewusst nicht** Teil dieses Repos — wegen
-Dateigröße und Urheberrecht. Die obige Protokoll-Beschreibung genügt zur Nutzung.
-
----
-
-*Prototyp.* Direkte, eigenständige Hardware-Steuerung ohne Abhängigkeit von der
-Original-Software.
+Der Ordner `reference/` (Monograms proprietärer Installer/Binärdateien aus dem
+Reverse-Engineering) ist **bewusst nicht** Teil des Repos — wegen Dateigröße und
+Urheberrecht. Die Protokoll-Beschreibung oben genügt zur Nutzung.

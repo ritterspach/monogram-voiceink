@@ -6,7 +6,9 @@ enum HDLC {
     static let esc: UInt8 = 0x7D
 
     static func encode(_ payload: Data) -> Data {
-        var out = Data([flag])
+        var out = [UInt8]()
+        out.reserveCapacity(payload.count + (payload.count >> 3) + 2)
+        out.append(flag)
         for b in payload {
             if b == flag || b == esc {
                 out.append(esc)
@@ -16,7 +18,7 @@ enum HDLC {
             }
         }
         out.append(flag)
-        return out
+        return Data(out)
     }
 
     static func decode(_ frame: Data) -> Data {

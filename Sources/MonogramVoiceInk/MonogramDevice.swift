@@ -12,13 +12,19 @@ struct ButtonEvent {
 /// High-Level-Zugriff auf das Monogram Core Module über USB-Seriell.
 /// Eingang: MessagePack {"in": [ {"i": slot, "v": [maske, ...]}, ... ]} in 0x7e-Frames.
 /// Ausgang: einzelne Befehls-Frames (set_module, set_brightness, write_display_slow, invoke_display).
+/// Alle Sendevorgänge laufen auf einem Hintergrund-Thread, damit der Main-Thread für
+/// präzise Tasten-Zeitstempel frei bleibt.
 final class MonogramDevice: NSObject, ORSSerialPortDelegate {
     private let port: ORSSerialPort
+    private let outQueue = DispatchQueue(label: "com.monogram.serial.out")
     private var buf: [UInt8] = []
     private var state: [Int: Int] = [:]   // slot -> letzte Tasten-Bitmaske
 
     /// Wird bei jedem Flankenwechsel aufgerufen (mit monotonem Zeitstempel in Sekunden).
     var onButton: ((ButtonEvent, Double) -> Void)?
+
+    /// Wird gerufen, wenn der Port aus dem System verschwindet (Abziehen/Fehler).
+    var onRemoved: (() -> Void)?
 
     var path: String { port.path }
 
@@ -39,10 +45,11 @@ final class MonogramDevice: NSObject, ORSSerialPortDelegate {
     func open() { port.open() }
     func close() { port.close() }
 
-    // MARK: - Senden
+    // MARK: - Senden (immer auf outQueue, nicht-blockierend)
 
     func send(_ value: MessagePackValue) {
-        port.send(HDLC.encode(pack(value)))
+        let frame = HDLC.encode(pack(value))
+        outQueue.async { [port] in _ = port.send(frame) }
     }
 
     func setBrightness(moduleLed: Int = 128, displayBacklight: Int = 255) {
@@ -57,25 +64,29 @@ final class MonogramDevice: NSObject, ORSSerialPortDelegate {
     }
 
     /// Schreibt ein 240x240-RGB565-Bild (115200 Bytes) aufs Display.
+    /// Aufbau + Senden geschehen auf outQueue (entlastet den Main-Thread).
     func writeDisplay(_ rgb565: Data, liveRefresh: Bool = false) {
-        let w = 240, rows = 4, bpp = 2
-        let packet = w * rows * bpp
-        var out = Data()
-        if !liveRefresh {
-            out.append(HDLC.encode(pack(["invoke_display": .int(0x03)])))
+        outQueue.async { [port] in
+            let w = 240, rows = 4, bpp = 2
+            let packet = w * rows * bpp
+            var out = [UInt8]()
+            out.reserveCapacity(rgb565.count + rgb565.count / 8 + 4096)
+            if !liveRefresh {
+                out.append(contentsOf: HDLC.encode(pack(["invoke_display": .int(0x03)])))
+            }
+            var idx = 0
+            var i = 0
+            while i < rgb565.count {
+                let chunk = rgb565.subdata(in: i ..< min(i + packet, rgb565.count))
+                let msg: MessagePackValue = ["write_display_slow":
+                    [.bool(true), .int(0), .int(Int64(idx * rows)), .int(Int64(w)), .int(Int64((idx + 1) * rows)), .binary(chunk)]]
+                out.append(contentsOf: HDLC.encode(pack(msg)))
+                idx += 1
+                i += packet
+            }
+            out.append(contentsOf: HDLC.encode(pack(["invoke_display": .int(0x04)])))
+            _ = port.send(Data(out))
         }
-        var idx = 0
-        var i = 0
-        while i < rgb565.count {
-            let chunk = rgb565.subdata(in: i ..< min(i + packet, rgb565.count))
-            let msg: MessagePackValue = ["write_display_slow":
-                [.bool(true), .int(0), .int(Int64(idx * rows)), .int(Int64(w)), .int(Int64((idx + 1) * rows)), .binary(chunk)]]
-            out.append(HDLC.encode(pack(msg)))
-            idx += 1
-            i += packet
-        }
-        out.append(HDLC.encode(pack(["invoke_display": .int(0x04)])))
-        port.send(out)
     }
 
     // MARK: - ORSSerialPortDelegate
@@ -92,11 +103,12 @@ final class MonogramDevice: NSObject, ORSSerialPortDelegate {
     }
 
     func serialPort(_ serialPort: ORSSerialPort, didEncounterError error: Error) {
-        FileHandle.standardError.write(Data("Serial-Fehler: \(error)\n".utf8))
+        Log.device.error("Serial-Fehler: \(error.localizedDescription, privacy: .public)")
     }
 
     func serialPortWasRemovedFromSystem(_ serialPort: ORSSerialPort) {
-        FileHandle.standardError.write(Data("Gerät entfernt.\n".utf8))
+        Log.device.notice("Gerät entfernt.")
+        onRemoved?()
     }
 
     // MARK: - Frame-Parsing

@@ -26,7 +26,11 @@ final class MonogramDevice: NSObject, ORSSerialPortDelegate {
     /// Wird gerufen, wenn der Port aus dem System verschwindet (Abziehen/Fehler).
     var onRemoved: (() -> Void)?
 
+    /// Wird gerufen, sobald der Port tatsächlich geöffnet ist (für die Startanzeige).
+    var onOpened: (() -> Void)?
+
     var path: String { port.path }
+    var isOpen: Bool { port.isOpen }
 
     init?(path: String) {
         guard let p = ORSSerialPort(path: path) else { return nil }
@@ -94,6 +98,7 @@ final class MonogramDevice: NSObject, ORSSerialPortDelegate {
     func serialPortWasOpened(_ serialPort: ORSSerialPort) {
         serialPort.rts = true
         serialPort.dtr = true
+        DispatchQueue.main.async { [weak self] in self?.onOpened?() }
     }
 
     func serialPort(_ serialPort: ORSSerialPort, didReceive data: Data) {

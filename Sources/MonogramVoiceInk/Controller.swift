@@ -22,6 +22,7 @@ final class Controller {
     private var recStart = 0.0
     private var lastSec = -1
     private var overlayUntil = 0.0
+    private var didStartup = false
 
     private let tapMax = 0.35
     private var timer: DispatchSourceTimer?
@@ -39,8 +40,6 @@ final class Controller {
     private var modeName: String { modes.isEmpty ? "—" : modes[selected].name }
 
     func start() {
-        dev.setBrightness()
-        showIdle()
         dev.onButton = { [weak self] ev, ts in
             DispatchQueue.main.async { self?.onButton(ev, ts) }
         }
@@ -49,16 +48,49 @@ final class Controller {
         t.setEventHandler { [weak self] in self?.tick() }
         t.resume()
         timer = t
+
+        // Startanzeige erst, wenn der Port wirklich offen ist – sonst gehen die
+        // Schreibvorgänge beim Wieder-Anstecken verloren (open() ist asynchron).
+        dev.onOpened = { [weak self] in self?.scheduleStartupDraw() }
+        if dev.isOpen { scheduleStartupDraw() }
+
         let withSc = modes.filter { $0.shortcut != nil }.map { $0.name }
         let summary = "Modi: \(modes.map { $0.name }.joined(separator: ", "))  |  mit eigenem Shortcut: \(withSc.isEmpty ? "keine" : withSc.joined(separator: ", "))  |  Aufnahme-Hotkey: \(toggle != nil ? "ok" : "fehlt")"
         Log.app.notice("\(summary, privacy: .public)")
     }
 
-    /// Baut Timer und Geräte-Callback ab (z. B. wenn das Gerät verschwindet).
+    /// Zeichnet Helligkeit + Idle-Screen einmalig, kurz nachdem der Port offen ist
+    /// (kleine Settle-Zeit, da das Gerät beim Enumerieren einen Moment braucht).
+    private func scheduleStartupDraw() {
+        guard !didStartup else { return }
+        didStartup = true
+        // Das Gerät hat keinen Bereitschafts-Indikator und sendet nichts von sich aus;
+        // nach einem Replug braucht es unterschiedlich lange, bis es Befehle annimmt.
+        // Helligkeit daher mehrfach über die ersten Sekunden neu setzen – flimmerfrei,
+        // da reines set_brightness ohne Neuaufbau. So bleibt die Beleuchtung auch dann
+        // an, wenn das Gerät erst spät bereit ist (sonst bliebe sie dauerhaft aus).
+        for delay in [0.3, 0.8, 1.5, 2.5, 4.0, 6.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, !self.recording else { return }
+                self.dev.setBrightness()
+            }
+        }
+        // Idle-Screen seltener neu zeichnen (Neuaufbau vermeiden), abgebrochen falls
+        // inzwischen aufgenommen wird oder ein Modus-Overlay aktiv ist.
+        for delay in [0.5, 1.5, 3.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, !self.recording, self.overlayUntil == 0 else { return }
+                self.showIdle()
+            }
+        }
+    }
+
+    /// Baut Timer und Geräte-Callbacks ab (z. B. wenn das Gerät verschwindet).
     func stop() {
         timer?.cancel()
         timer = nil
         dev.onButton = nil
+        dev.onOpened = nil
     }
 
     private func onButton(_ ev: ButtonEvent, _ ts: Double) {

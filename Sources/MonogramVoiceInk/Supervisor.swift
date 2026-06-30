@@ -49,9 +49,9 @@ final class Supervisor {
         d.onRemoved = { [weak self] in
             DispatchQueue.main.async { self?.teardown() }
         }
-        d.open()
         let c = Controller(dev: d)
-        c.start()
+        c.start()                 // verkabelt onButton/onOpened, bevor geöffnet wird
+        d.open()                  // löst onOpened aus → Startanzeige
         dev = d
         controller = c
         Log.device.notice("Verbunden mit \(path, privacy: .public).")
